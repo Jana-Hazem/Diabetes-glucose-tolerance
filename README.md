@@ -27,7 +27,7 @@ The core question of this project: **how do different computational approaches c
 | Approach | Method | Key Idea |
 |---|---|---|
 | **Classical 1** | Runge-Kutta 4 (RK4) | Fixed-step, 4th-order accuracy — the numerical workhorse |
-| **Classical 2** | Adaptive RK45 / Adams-Bashforth | Step size adjusts to solution curvature — smarter where it matters |
+| **Classical 2** | Adaptive RK45  | Step size adjusts to solution curvature — smarter where it matters |
 | **ML/DL** | Physics-Informed Neural Network (PINN) | A neural net that learns G(t) and I(t) while obeying the ODE laws |
 
 The PINN is trained with a composite loss: **data fidelity + physics residual**, meaning the network is penalized not just for wrong predictions, but for violating the ODEs themselves.
@@ -98,6 +98,13 @@ These results highlight the complementary strengths of classical numerical solve
 - **GitHub Pages** — Live project documentation
 
 ---
+## 🔍 Key Findings
+
+- RK4 achieved high accuracy with predictable computational cost.
+- Adaptive RK45 reduced the number of integration steps while maintaining accuracy.
+- The PINN successfully learned glucose-insulin dynamics while satisfying the governing ODEs.
+- Physics-informed training improved generalization to unseen conditions.
+- Classical solvers remained faster, while the PINN offered greater flexibility for future patient-specific modeling.
 
 ## 📚 Clinical Motivation
 
