@@ -98,6 +98,41 @@ These results highlight the complementary strengths of classical numerical solve
 - **GitHub Pages** — Live project documentation
 
 ---
+
+## 🚀 Quick Start
+
+### Clone the Repository
+
+```bash
+git clone https://github.com/Jana-Hazem/Diabetes-glucose-tolerance.git
+cd Diabetes-glucose-tolerance
+```
+
+### Run the Numerical Methods
+
+```bash
+python numerical_methods/rk4_solver.py
+python numerical_methods/scheme2_solver.py
+```
+
+### Train the Physics-Informed Neural Network (PINN)
+
+```bash
+python ml_dl/train.py
+```
+
+### Generated Outputs
+
+After execution, simulation results, performance metrics, and figures will be saved under:
+
+```text
+results/
+├── figures/
+├── metrics/
+└── *.csv
+```
+
+The generated outputs include numerical solver results, PINN predictions, convergence analysis, benchmarking metrics, and comparison figures used throughout the project report and presentation.
 ## 🔍 Key Findings
 
 - RK4 achieved high accuracy with predictable computational cost.
