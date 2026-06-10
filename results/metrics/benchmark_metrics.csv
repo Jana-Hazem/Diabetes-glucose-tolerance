@@ -1,4 +1,0 @@
-Method,RMSE_G,RMSE_I,MAE_G,MAE_I,CPU_time_sec,Peak_mem_KB,RMSE_combined,MAE_combined,Rank_Accuracy,Rank_Speed,Notes
-RK4,0.0,0.0,0.0,0.0,0.017537,305.8,0.0,0.0,1,2,Reference (fixed h=0.25h)
-Scheme2 (RK45),2.821161,0.202306,1.077509,0.109864,0.005725,289.8,3.023467,1.187373,3,1,Adaptive step; fastest wall-clock
-PINN,1.553329,0.114623,1.290728,0.097591,,288.9,1.667952,1.388319,2,3,Physics-informed NN; CPU time TBD
