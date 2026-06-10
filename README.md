@@ -64,13 +64,13 @@ We run all three solvers across **4 clinical scenarios** (normal pancreas, norma
 
 The figure below shows the convergence behavior of the classical 4th-order Runge–Kutta method as the step size is refined. As expected, the numerical error decreases with smaller step sizes, demonstrating the accuracy and stability of RK4 for the glucose–insulin dynamics model.
 
-![RK4 Convergence](results/figures/rk4_convergence.png)
+![RK4 Convergence](results/figures/numerical/rk4_convergence.png)
 
 ### Physics-Informed Neural Network Training
 
 The PINN training process is monitored through the evolution of the total loss function. The decreasing loss demonstrates successful learning of the glucose–insulin dynamics while simultaneously satisfying the governing differential equations through physics-informed regularization.
 
-![PINN Loss Curves](results/figures/ml_loss_curves.png)
+![PINN Loss Curves](results/figures/Machine-Learning/ml_loss_curves.png)
 
 These results highlight the complementary strengths of classical numerical solvers and physics-informed machine learning approaches for biomedical system modeling.
 
