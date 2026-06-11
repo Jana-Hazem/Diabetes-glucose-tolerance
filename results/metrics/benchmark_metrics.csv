@@ -1,4 +1,0 @@
-Method,Role,RMSE_G,RMSE_I,MAE_G,MAE_I,CPU_time_sec,Peak_mem_KB,RMSE_combined,MAE_combined,Rank_Accuracy,Rank_Speed,Reference_used
-RK4,Reference,0.0,0.0,0.0,0.0,0.017537,298.1,0.0,0.0,,,RK4 (rk4_results.csv)
-Scheme 2 (RK45),Compared,2.821161,0.202306,1.077509,0.109864,0.005725,281.7,3.023467,1.187373,1,1,RK4 (rk4_results.csv)
-PINN,Compared,3.053396,0.229297,1.989430,0.181175,0.000308,324.5,3.282693,2.170605,2,2,RK4 (rk4_results.csv)
