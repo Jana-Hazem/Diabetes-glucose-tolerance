@@ -1,180 +1,197 @@
-"""
-loss_functions.py
------------------
-Loss terms for the Bergman PINN training loop.
-
-Three components
-----------------
-1. data_loss_weighted  – MSE against RK45 reference, with exponential
-                         up-weighting in the early spike region.
-2. physics_loss        – Mean-squared ODE residuals at collocation points.
-3. ic_loss             – Penalises deviation from known initial conditions.
-"""
+# =============================================================================
+# loss_functions.py
+# RANDAL PINN — Schiesser/Randall Glucose Tolerance Model
+# Reference: Schiesser (2014), Ch. 2 — ncase=2
+# =============================================================================
 
 import torch
-from model_architecture import BergmanPINN, bergman_residuals
+import torch.nn as nn
+
+# ── Schiesser / Randall Model Parameters ─────────────────────────────────────
+# Units: mg glucose or insulin / 100 ml extracellular fluid (mGml / mIml)
+#        time in hours
+# Source: Schiesser (2014), Chapter 2, Listing 2.1
+
+Ex  = 15000.0   # extracellular space (ml)
+Cg  = 150.0     # glucose capacitance = Ex/100
+Ci  = 150.0     # insulin capacitance = Ex/100
+Q   = 8400.0    # liver release of glucose (mG/hr)
+Gt  = 80000.0   # glucose infusion rate (mG/hr) — ncase=2: with infusion
+Dd  = 24.7      # first-order glucose loss (mG/hr/mGml)
+Gg  = 13.9      # controlled glucose loss (mG/hr/mGml/mIml)
+Gk  = 250.0     # renal threshold (mGml)
+Mu  = 72.0      # renal loss rate (mG/hr/mGml)
+G0  = 51.0      # pancreas threshold (mGml)
+Bb  = 14.3      # insulin release rate — normal sensitivity (ncase=2)
+Aa  = 76.0      # first-order insulin clearance rate (mI/hr/mIml)
+
+# Initial conditions
+G_init = 81.14  # mGml
+I_init = 5.671  # mIml
 
 
-# ---------------------------------------------------------------------------
-# 1. Data fidelity loss (weighted MSE)
-# ---------------------------------------------------------------------------
-
-def data_loss_weighted(
-    model:   BergmanPINN,
-    t_norm:  torch.Tensor,
-    G_norm:  torch.Tensor,
-    I_norm:  torch.Tensor,
-    t_max:   torch.Tensor,
-    *,
-    spike_weight: float = 15.0,
-    spike_decay:  float = 3.0,
-) -> torch.Tensor:
-    """
-    Weighted MSE between network predictions and the RK45 reference data.
-
-    The weight function
-        w(t) = 1 + spike_weight * exp(-spike_decay * t_raw)
-    assigns higher importance to the early-time glucose spike (first ~2 h).
-
-    Parameters
-    ----------
-    model        : trained / in-training BergmanPINN instance
-    t_norm       : normalised time points, shape (N, 1)
-    G_norm       : normalised glucose reference, shape (N, 1)
-    I_norm       : normalised insulin reference, shape (N, 1)
-    t_max        : scalar – used to recover physical time for weighting
-    spike_weight : multiplier at t=0 (default 15)
-    spike_decay  : exponential decay rate  (default 3)
-
-    Returns
-    -------
-    torch.Tensor (scalar) – combined weighted data loss for G and I
-    """
-    out    = model(t_norm)
-    G_pred = out[:, 0:1]
-    I_pred = out[:, 1:2]
-
-    t_raw  = t_norm * t_max
-    weight = 1.0 + spike_weight * torch.exp(-spike_decay * t_raw)
-
-    loss_G = torch.mean(weight * (G_pred - G_norm) ** 2)
-    loss_I = torch.mean(weight * (I_pred - I_norm) ** 2)
-    return loss_G + loss_I
-
-
-# ---------------------------------------------------------------------------
-# 2. Physics (ODE residual) loss
-# ---------------------------------------------------------------------------
-
-def physics_loss(
-    model:    BergmanPINN,
-    t_colloc: torch.Tensor,
-    G_scale:  torch.Tensor,
-    I_scale:  torch.Tensor,
-    t_max:    torch.Tensor,
-) -> torch.Tensor:
-    """
-    Mean-squared ODE residuals evaluated at collocation points.
-
-    Parameters
-    ----------
-    model     : BergmanPINN instance
-    t_colloc  : collocation time points (will be cloned + grad enabled),
-                shape (M, 1)
-    G_scale   : mean glucose value used for normalisation (mg/dL)
-    I_scale   : mean insulin value used for normalisation (µU/mL)
-    t_max     : maximum time in the dataset (hours)
-
-    Returns
-    -------
-    torch.Tensor (scalar) – sum of mean-squared residuals for G and I
-    """
-    t_c = t_colloc.clone().requires_grad_(True)
-    out = model(t_c)
-    G_n = out[:, 0:1]
-    I_n = out[:, 1:2]
-
-    res_G, res_I = bergman_residuals(t_c, G_n, I_n, G_scale, I_scale, t_max)
-    return torch.mean(res_G ** 2) + torch.mean(res_I ** 2)
-
-
-# ---------------------------------------------------------------------------
-# 3. Initial-condition loss
-# ---------------------------------------------------------------------------
-
-def ic_loss(
-    model:   BergmanPINN,
+def randall_residuals(
+    t_n: torch.Tensor,
+    G_n_pred: torch.Tensor,
+    I_n_pred: torch.Tensor,
     G_scale: torch.Tensor,
     I_scale: torch.Tensor,
-    *,
-    G0: float = 81.14,
-    I0: float = 5.671,
-) -> torch.Tensor:
+    t_max: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
     """
-    Penalises the network prediction at t=0 deviating from known ICs.
+    Compute PINN physics residuals for the Schiesser/Randall 2-ODE system.
 
-    Normalised form:  ((G_pred - G0) / G_scale)^2 + ((I_pred - I0) / I_scale)^2
+    Physical ODEs (Schiesser 2014, Ch. 2, Listing 2.2):
+        Cg * dG/dt = Q + In(t) - Gg*I*G - Dd*G              [G < Gk]
+        Cg * dG/dt = Q + In(t) - Gg*I*G - Dd*G - Mu*(G-Gk)  [G >= Gk]
+        Ci * dI/dt = -Aa*I                                   [G < G0]
+        Ci * dI/dt = -Aa*I + Bb*(G - G0)                    [G >= G0]
+
+    Glucose infusion: In(t) = Gt  for t <= 0.5 h, else 0  (ncase=2)
 
     Parameters
     ----------
-    model   : BergmanPINN instance
-    G_scale : normalisation factor for G (mg/dL)
-    I_scale : normalisation factor for I (µU/mL)
-    G0      : initial blood glucose (mg/dL)  – default 81.14
-    I0      : initial plasma insulin (µU/mL) – default 5.671
+    t_n       : (N,1) normalised time, requires_grad=True
+    G_n_pred  : (N,1) normalised glucose prediction
+    I_n_pred  : (N,1) normalised insulin prediction
+    G_scale   : scalar tensor — mean glucose used for normalisation
+    I_scale   : scalar tensor — mean insulin used for normalisation
+    t_max     : scalar tensor — max time (12 h) used for normalisation
 
     Returns
     -------
-    torch.Tensor (scalar) – IC loss
+    res_G, res_I : (N,1) ODE residuals in normalised space
     """
-    t0  = torch.tensor([[0.0]])
-    out = model(t0)
-    G_pred = out[0, 0] * G_scale
-    I_pred = out[0, 1] * I_scale
+    # Un-normalise to physical units
+    G_pred = G_n_pred * G_scale   # mGml
+    I_pred = I_n_pred * I_scale   # mIml
+    t_h    = t_n * t_max          # hours
 
-    return (G_pred - G0) ** 2 / G_scale ** 2 + \
-           (I_pred - I0) ** 2 / I_scale ** 2
+    # Glucose infusion function
+    In = torch.where(
+        t_h <= 0.5,
+        torch.tensor(Gt, dtype=torch.float32, device=t_n.device),
+        torch.tensor(0.0,                     device=t_n.device),
+    )
+
+    # Automatic differentiation w.r.t. normalised time
+    dGdt_n = torch.autograd.grad(
+        G_n_pred, t_n,
+        grad_outputs=torch.ones_like(G_n_pred),
+        create_graph=True,
+    )[0]
+    dIdt_n = torch.autograd.grad(
+        I_n_pred, t_n,
+        grad_outputs=torch.ones_like(I_n_pred),
+        create_graph=True,
+    )[0]
+
+    # Glucose RHS — piecewise on renal threshold Gk
+    rhs_G_base = Q + In - Gg * I_pred * G_pred - Dd * G_pred
+    renal       = Mu * torch.clamp(G_pred - Gk, min=0.0)
+    rhs_G       = rhs_G_base - renal   # mG/hr
+
+    # Insulin RHS — piecewise on pancreas threshold G0
+    rhs_I = -Aa * I_pred + Bb * torch.clamp(G_pred - G0, min=0.0)  # mI/hr
+
+    # Chain-rule residuals (normalised space):
+    #   d(G_n)/d(t_n) = (t_max / G_scale) * dG/dt  =>
+    #   residual = d(G_n)/d(t_n) - (t_max / (Cg * G_scale)) * rhs_G
+    res_G = dGdt_n - (t_max / (Cg * G_scale)) * rhs_G
+    res_I = dIdt_n - (t_max / (Ci * I_scale)) * rhs_I
+
+    return res_G, res_I
 
 
-# ---------------------------------------------------------------------------
-# 4. Combined loss (convenience wrapper)
-# ---------------------------------------------------------------------------
-
-def total_loss(
-    model:    BergmanPINN,
-    t_norm:   torch.Tensor,
-    G_norm:   torch.Tensor,
-    I_norm:   torch.Tensor,
-    t_colloc: torch.Tensor,
-    G_scale:  torch.Tensor,
-    I_scale:  torch.Tensor,
-    t_max:    torch.Tensor,
-    lam:      float,
-    *,
-    ic_weight: float = 0.05,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+def compute_loss(
+    model: nn.Module,
+    t_n: torch.Tensor,
+    G_n: torch.Tensor,
+    I_n: torch.Tensor,
+    t_n_phys: torch.Tensor,
+    lambda_phys: float,
+    G_scale: torch.Tensor,
+    I_scale: torch.Tensor,
+    t_max: torch.Tensor,
+    device: str,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """
-    Aggregate all loss terms into a single scalar.
+    Compute total PINN loss:
+        L = L_data  +  lambda_phys * L_physics  +  0.05 * L_IC
 
-        L_total = L_data + lam * L_physics + ic_weight * L_ic
+    Spike-region upweighting: t < 2 h (glucose peak) weighted 16×.
 
     Parameters
     ----------
-    lam       : physics loss weight (0 during warm-up, ramps up afterwards)
-    ic_weight : initial-condition loss weight (default 0.05)
+    model       : RandallPINN instance
+    t_n         : (N,1) normalised training time, on device
+    G_n         : (N,1) normalised glucose training data
+    I_n         : (N,1) normalised insulin training data
+    t_n_phys    : (M,1) normalised collocation points for physics loss
+    lambda_phys : float, current physics loss weight
+    G_scale     : normalisation scalar (mean glucose)
+    I_scale     : normalisation scalar (mean insulin)
+    t_max       : normalisation scalar (12 h)
+    device      : 'cuda' or 'cpu'
 
     Returns
     -------
-    (L_total, L_data, L_physics) – all as scalar tensors
+    loss, L_data, L_phys, L_ic : scalar tensors
     """
-    Ld  = data_loss_weighted(model, t_norm, G_norm, I_norm, t_max)
-    Lic = ic_loss(model, G_scale, I_scale)
+    # ── Data loss ────────────────────────────────────────────────────────────
+    out      = model(t_n)
+    G_pred_n = out[:, 0:1]
+    I_pred_n = out[:, 1:2]
 
-    if lam > 0.0:
-        Lp   = physics_loss(model, t_colloc, G_scale, I_scale, t_max)
-        loss = Ld + lam * Lp + ic_weight * Lic
-    else:
-        Lp   = torch.tensor(0.0)
-        loss = Ld + ic_weight * Lic
+    # Upweight spike region (t < 2 h normalised = 2/t_max)
+    spike_mask = (t_n < (2.0 / t_max.item())).float().to(device)
+    w = 1.0 + 15.0 * spike_mask   # 16× in spike region, 1× elsewhere
 
-    return loss, Ld, Lp
+    L_data = (w * (G_pred_n - G_n) ** 2).mean() + \
+             (w * (I_pred_n - I_n) ** 2).mean()
+
+    # ── Physics loss ─────────────────────────────────────────────────────────
+    t_p   = t_n_phys.requires_grad_(True)
+    out_p = model(t_p)
+    G_p   = out_p[:, 0:1]
+    I_p   = out_p[:, 1:2]
+
+    res_G, res_I = randall_residuals(t_p, G_p, I_p, G_scale, I_scale, t_max)
+    L_phys = res_G.pow(2).mean() + res_I.pow(2).mean()
+
+    # ── Initial condition loss ────────────────────────────────────────────────
+    t_ic   = torch.zeros(1, 1, dtype=torch.float32).to(device)
+    out_ic = model(t_ic)
+    G_ic   = out_ic[0, 0]
+    I_ic   = out_ic[0, 1]
+    L_ic   = (G_ic - G_init / G_scale.item()) ** 2 + \
+             (I_ic - I_init / I_scale.item()) ** 2
+
+    loss = L_data + lambda_phys * L_phys + 0.05 * L_ic
+    return loss, L_data, L_phys, L_ic
+
+
+# ── Quick test ────────────────────────────────────────────────────────────────
+if __name__ == '__main__':
+    from model_architecture import build_model
+
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    model  = build_model(device=device)
+
+    # Dummy tensors
+    t_n     = torch.linspace(0, 1, 49).unsqueeze(1).to(device)
+    G_n     = torch.ones_like(t_n)
+    I_n     = torch.ones_like(t_n)
+    t_phys  = torch.linspace(0, 1, 100).unsqueeze(1).to(device)
+    G_scale = torch.tensor(100.0)
+    I_scale = torch.tensor(9.0)
+    t_max   = torch.tensor(12.0)
+
+    loss, Ld, Lp, Lic = compute_loss(
+        model, t_n, G_n, I_n, t_phys,
+        lambda_phys=0.1,
+        G_scale=G_scale, I_scale=I_scale, t_max=t_max,
+        device=device,
+    )
+    print(f'Test loss={loss.item():.5f} | L_data={Ld.item():.5f} '
+          f'| L_phys={Lp.item():.5f} | L_ic={Lic.item():.5f}')

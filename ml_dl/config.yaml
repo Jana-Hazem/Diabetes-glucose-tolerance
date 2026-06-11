@@ -1,91 +1,53 @@
-# config.yaml
-# ---------------------------------------------------------------------------
-# Bergman Minimal Model – PINN Configuration
-# ---------------------------------------------------------------------------
-# All hyper-parameters, Bergman ODE constants, and I/O paths in one place.
-# Load with:
-#   import yaml
-#   with open("config.yaml") as f:
-#       cfg = yaml.safe_load(f)
-# ---------------------------------------------------------------------------
+# RANDAL PINN — Schiesser/Randall Glucose Tolerance Model
+# Schiesser (2014), Ch. 2 — ncase=2 (normal Bb, with glucose infusion)
 
-# ── Data ────────────────────────────────────────────────────────────────────
-data:
-  csv_path: "RK45_Results.csv"       # Input RK45 reference file
-  t_col:    "t"                       # Time column name
-  G_col:    "G"                       # Blood glucose column name  (mg/dL)
-  I_col:    "I"                       # Plasma insulin column name (µU/mL)
-
-# ── Normalisation ───────────────────────────────────────────────────────────
-normalisation:
-  # "mean"  → divide each signal by its dataset mean  (used in training)
-  # "fixed" → use the fixed values below
-  strategy: "mean"
-  fixed_G_scale: 100.0               # Only used when strategy = "fixed"
-  fixed_I_scale: 10.0
-
-# ── Bergman ODE parameters ──────────────────────────────────────────────────
-bergman:
-  p1:    0.028       # Glucose effectiveness (min⁻¹)
-  p3:    5.035e-5    # Insulin-mediated uptake rate (min⁻¹ per µU/mL)
-  Gb:    81.14       # Basal blood glucose (mg/dL)
-  n:     0.09        # Insulin decay rate (min⁻¹)
-  gamma: 0.004       # Pancreatic insulin secretion rate (µU/mL/min per mg/dL)
-  h:     80.0        # Glucose threshold for insulin secretion (mg/dL)
-
-# ── Initial conditions ───────────────────────────────────────────────────────
-initial_conditions:
-  G0: 81.14    # Initial blood glucose  (mg/dL)
-  I0: 5.671    # Initial plasma insulin (µU/mL)
-
-# ── Network architecture ────────────────────────────────────────────────────
 model:
-  hidden_layers: 6     # Number of hidden layers
-  hidden_size:   128   # Neurons per hidden layer
-  activation:    "tanh"
+  type: PINN
+  ode_system: Schiesser-Randall-2ODE
+  hidden_layers: 6
+  neurons_per_layer: 128
+  activation: tanh
+  outputs: [G_norm, I_norm]
 
-# ── Collocation points ───────────────────────────────────────────────────────
-collocation:
-  n_uniform:   300    # Uniformly spaced over [0, 1]
-  n_spike:     100    # Dense points in the early spike region [0, 0.2]
-  spike_end:   0.2    # Upper bound of the spike window (normalised time)
-
-# ── Training ────────────────────────────────────────────────────────────────
 training:
-  epochs:        10000
-  learning_rate: 5.0e-4
-  grad_clip:     1.0       # Max gradient norm for clipping
+  epochs: 20000
+  lr_initial: 0.0005
+  scheduler: ReduceLROnPlateau
+  scheduler_patience: 300
+  scheduler_factor: 0.5
+  lambda_physics_max: 0.1
+  physics_ramp_start_epoch: 2000
+  lambda_ic: 0.05
+  spike_upweight: 16
+  spike_region_hours: 2.0
+  n_collocation_points: 500
+  best_loss: 0.000074
 
-  # Curriculum: physics loss is ramped in after warm_up_epochs
-  warm_up_epochs: 2000     # Epochs trained with data + IC only (lambda = 0)
-  lam_max:        0.05     # Maximum physics loss weight
-  lam_ramp_steps: 3000     # Number of epochs over which lambda ramps to lam_max
+parameters:  # Schiesser (2014) Ch.2, Listing 2.1 — ncase=2
+  Ex: 15000.0
+  Cg: 150.0
+  Ci: 150.0
+  Q: 8400.0
+  Gt: 80000.0
+  Dd: 24.7
+  Gg: 13.9
+  Gk: 250.0
+  Mu: 72.0
+  G0: 51.0
+  Bb: 14.3
+  Aa: 76.0
 
-  # Loss weights
-  ic_weight:      0.05     # Weight for initial-condition loss term
+initial_conditions:
+  G0_mGml: 81.14
+  I0_mIml: 5.671
 
-  # Data loss weighting (spike region)
-  spike_weight:   15.0     # Extra weight at t = 0
-  spike_decay:    3.0      # Exponential decay rate for spike weight
+normalisation:
+  t_max_h: 12.0000
+  G_scale_mGml: 88.3935
+  I_scale_mIml: 7.0390
 
-# ── LR scheduler ────────────────────────────────────────────────────────────
-scheduler:
-  type:      "ReduceLROnPlateau"
-  patience:  500
-  factor:    0.5
-  min_lr:    1.0e-6
-
-# ── Checkpointing & outputs ─────────────────────────────────────────────────
-output:
-  checkpoint_dir:   "checkpoints"
-  best_model_name:  "best_model.pt"
-  output_dir:       "PINN_outputs"
-  loss_curve_png:   "ml_loss_curves.png"
-  comparison_png:   "ml_GI_comparison.png"
-  metrics_csv:      "ml_metrics.csv"
-  predictions_csv:  "ml_predictions.csv"
-  zip_name:         "PINN_outputs.zip"
-
-# ── Logging ──────────────────────────────────────────────────────────────────
-logging:
-  print_every: 1000    # Print progress every N epochs
+metrics:
+  RMSE_G_mGml: 0.5753
+  RMSE_I_mIml: 0.039258
+  MAE_G_mGml:  0.4531
+  MAE_I_mIml:  0.031178

@@ -1,124 +1,98 @@
-"""
-model_architecture.py
----------------------
-Bergman Minimal Model – Physics-Informed Neural Network (PINN)
-
-Network: fully-connected MLP with Tanh activations.
-Input  : normalised time  t_norm ∈ [0, 1]
-Outputs: (G_norm, I_norm)  — blood glucose and plasma insulin,
-         both normalised to unit scale (divide by their dataset mean).
-"""
+# =============================================================================
+# model_architecture.py
+# RANDAL PINN — Schiesser/Randall Glucose Tolerance Model
+# Reference: Schiesser (2014), Ch. 2 — ncase=2
+# =============================================================================
 
 import torch
 import torch.nn as nn
 
 
-class BergmanPINN(nn.Module):
+class RandallPINN(nn.Module):
     """
-    Multi-layer perceptron that approximates the solution of the
-    Bergman Minimal ODE system.
+    Physics-Informed Neural Network for the Schiesser/Randall 2-ODE model.
+
+    Architecture:
+        Input  : t_norm ∈ [0, 1]  (normalised time)
+        Hidden : `hidden_layers` fully-connected layers, each with `neurons`
+                 units and Tanh activation
+        Output : [G_norm, I_norm]  (normalised glucose and insulin)
 
     Parameters
     ----------
     hidden_layers : int
-        Number of hidden layers (default 6).
-    hidden_size   : int
-        Neurons per hidden layer (default 128).
+        Number of hidden layers (default: 6)
+    neurons : int
+        Neurons per hidden layer (default: 128)
     """
 
-    def __init__(self, hidden_layers: int = 6, hidden_size: int = 128):
+    def __init__(self, hidden_layers: int = 6, neurons: int = 128):
         super().__init__()
 
-        layers = [nn.Linear(1, hidden_size), nn.Tanh()]
-
+        layers = [nn.Linear(1, neurons), nn.Tanh()]
         for _ in range(hidden_layers - 1):
-            layers += [nn.Linear(hidden_size, hidden_size), nn.Tanh()]
-
-        # Two outputs: G_norm and I_norm
-        layers += [nn.Linear(hidden_size, 2)]
+            layers += [nn.Linear(neurons, neurons), nn.Tanh()]
+        layers.append(nn.Linear(neurons, 2))   # outputs: G_norm, I_norm
 
         self.net = nn.Sequential(*layers)
 
+        # Xavier initialisation for stable training
+        for m in self.net:
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_normal_(m.weight)
+                nn.init.zeros_(m.bias)
+
     def forward(self, t: torch.Tensor) -> torch.Tensor:
         """
+        Forward pass.
+
         Parameters
         ----------
-        t : torch.Tensor, shape (N, 1)
-            Normalised time values in [0, 1].
+        t : torch.Tensor of shape (N, 1)
+            Normalised time values in [0, 1]
 
         Returns
         -------
-        torch.Tensor, shape (N, 2)
-            Column 0 → G_norm predictions
-            Column 1 → I_norm predictions
+        torch.Tensor of shape (N, 2)
+            Column 0 : G_norm  (normalised glucose)
+            Column 1 : I_norm  (normalised insulin)
         """
         return self.net(t)
 
 
-# ---------------------------------------------------------------------------
-# ODE residuals (Bergman Minimal Model)
-# ---------------------------------------------------------------------------
-
-def bergman_residuals(
-    t:           torch.Tensor,
-    G_norm_pred: torch.Tensor,
-    I_norm_pred: torch.Tensor,
-    G_scale:     torch.Tensor,
-    I_scale:     torch.Tensor,
-    t_max:       torch.Tensor,
-    *,
-    p1:    float = 0.028,
-    p3:    float = 5.035e-5,
-    Gb:    float = 81.14,
-    n:     float = 0.09,
-    gamma: float = 0.004,
-    h:     float = 80.0,
-):
+def build_model(hidden_layers: int = 6,
+                neurons: int = 128,
+                device: str = 'cpu') -> RandallPINN:
     """
-    Compute ODE residuals for the Bergman Minimal Model using automatic
-    differentiation.
-
-    The ODE system (in physical units) is:
-        dG/dt = -p1*G - p3*I*G + p1*Gb
-        dI/dt =  gamma * max(G - h, 0) - n*I
-
-    Chain-rule correction converts normalised derivatives back to physical:
-        d(G_norm)/d(t_norm) = (t_max / G_scale) * dG/dt
+    Instantiate RandallPINN, move to device, and print a parameter summary.
 
     Parameters
     ----------
-    t            : collocation points (requires_grad=True), shape (N, 1)
-    G_norm_pred  : network output for G, shape (N, 1)
-    I_norm_pred  : network output for I, shape (N, 1)
-    G_scale      : scalar – mean of G in the training set (mg/dL)
-    I_scale      : scalar – mean of I in the training set (µU/mL)
-    t_max        : scalar – maximum time value in the dataset (hours)
-    p1, p3, Gb, n, gamma, h : Bergman model parameters
+    hidden_layers : int
+        Number of hidden layers
+    neurons : int
+        Neurons per layer
+    device : str
+        'cuda' or 'cpu'
 
     Returns
     -------
-    res_G : torch.Tensor  – glucose ODE residual,  shape (N, 1)
-    res_I : torch.Tensor  – insulin ODE residual,  shape (N, 1)
+    RandallPINN
+        Model on the specified device
     """
-    G_pred = G_norm_pred * G_scale
-    I_pred = I_norm_pred * I_scale
+    model = RandallPINN(hidden_layers=hidden_layers, neurons=neurons).to(device)
+    n_params = sum(p.numel() for p in model.parameters())
+    print(f'RandallPINN  |  {hidden_layers} hidden layers x {neurons} neurons  '
+          f'|  Tanh  |  {n_params:,} parameters  |  device={device}')
+    return model
 
-    dGdt_norm = torch.autograd.grad(
-        G_norm_pred, t,
-        grad_outputs=torch.ones_like(G_norm_pred),
-        create_graph=True,
-    )[0]
 
-    dIdt_norm = torch.autograd.grad(
-        I_norm_pred, t,
-        grad_outputs=torch.ones_like(I_norm_pred),
-        create_graph=True,
-    )[0]
-
-    rhs_G = -p1 * G_pred - p3 * I_pred * G_pred + p1 * Gb
-    rhs_I = gamma * torch.clamp(G_pred - h, min=0.0) - n * I_pred
-
-    res_G = dGdt_norm - (t_max / G_scale) * rhs_G
-    res_I = dIdt_norm - (t_max / I_scale) * rhs_I
-
-    return res_G, res_I
+# ── Quick test ────────────────────────────────────────────────────────────────
+if __name__ == '__main__':
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    model  = build_model(device=device)
+    t_test = torch.linspace(0, 1, 10).unsqueeze(1).to(device)
+    out    = model(t_test)
+    print(f'Test forward pass — input shape: {t_test.shape}, '
+          f'output shape: {out.shape}')
+    print(model)

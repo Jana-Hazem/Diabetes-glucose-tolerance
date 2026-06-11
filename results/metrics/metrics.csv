@@ -1,0 +1,6 @@
+metric,value,units
+RMSE_G,0.575336,mGml
+RMSE_I,0.039258,mIml
+MAE_G,0.453139,mGml
+MAE_I,0.031178,mIml
+best_loss,0.000074,dimensionless
